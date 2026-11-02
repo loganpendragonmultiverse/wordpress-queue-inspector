@@ -26,6 +26,9 @@ class CoreTests(unittest.TestCase):
   selected=select_jobs(BASE,term='send_mail',state='failed',min_age=60,group_by='status')
   self.assertEqual(len(selected['jobs']),2)
   self.assertEqual(selected['groups'],[('failed',2)])
+  future=copy.deepcopy(BASE);future['jobs'][0]['scheduled']='2027-01-01T00:00:00Z'
+  self.assertEqual(len(select_jobs(future)['jobs']),len(future['jobs']))
+  self.assertNotIn('1',[j['id'] for j in select_jobs(future,min_age=1)['jobs']])
  def test_partial_capture_and_timezone_offset(self):
   x=copy.deepcopy(BASE);x['coverage']['action']={'complete':False,'source_count':None};x['jobs']=x['jobs'][3:];x['coverage']['log']={'complete':False,'source_count':None};x['logs']=[]
   x['captured_start']='2026-11-01T14:00:00+02:00';x['captured_end']='2026-11-01T14:01:00+02:00'

@@ -187,7 +187,7 @@ def select_jobs(snapshot: dict, term: str = "", state: str = "", min_age: int = 
     query = term.casefold()
     rows = [j for j in snapshot["jobs"] if query in (j["hook"] + " " + j.get("group", "") + " " + j["id"]).casefold()
             and (not state or j["status"] == state)
-            and (end - iso(j["scheduled"])).total_seconds() >= min_age * 60]
+            and (min_age == 0 or (end - iso(j["scheduled"])).total_seconds() >= min_age * 60)]
     groups = Counter(j.get(group_by, "") for j in rows)
     return {"jobs": rows, "group_by": group_by, "groups": sorted(groups.items(), key=lambda item: (-item[1], item[0]))}
 
