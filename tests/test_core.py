@@ -91,18 +91,25 @@ class BrowserTests(unittest.TestCase):
   with tempfile.TemporaryDirectory() as root:
    p=Path(root)/'input.json';p.write_text(json.dumps(x))
    with socket.socket() as s:s.bind(('127.0.0.1',0));port=s.getsockname()[1]
-   proc=subprocess.Popen([sys.executable,'-m','wqi','serve',str(p),'--port',str(port)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+   proc=subprocess.Popen([sys.executable,'-m','wqi','serve',str(p),'--port',str(port)],stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,universal_newlines=True)
+   opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
    try:
-    for _ in range(40):
+    response=None;last_error=None
+    for _ in range(100):
      try:
-      response=urllib.request.urlopen(f'http://127.0.0.1:{port}/?page=4',timeout=.2);break
-     except Exception:time.sleep(.05)
-    body=response.read().decode();self.assertIn('>300</td>',body);self.assertNotIn('>299</td>',body)
-    self.assertIn('Action log timeline',urllib.request.urlopen(f'http://127.0.0.1:{port}/logs').read().decode())
+      response=opener.open(f'http://127.0.0.1:{port}/?page=4',timeout=.5);break
+     except Exception as error:
+      last_error=error
+      if proc.poll() is not None:break
+      time.sleep(.1)
+    if response is None: raise AssertionError(f'local server failed: {last_error}; process exit {proc.poll()}')
+    body=response.read().decode();response.close();self.assertIn('>300</td>',body);self.assertNotIn('>299</td>',body)
+    with opener.open(f'http://127.0.0.1:{port}/logs') as log_response:
+     self.assertIn('Action log timeline',log_response.read().decode())
     request=urllib.request.Request(f'http://127.0.0.1:{port}/',headers={'Host':'evil.example'})
-    with self.assertRaises(urllib.error.HTTPError) as ctx:urllib.request.urlopen(request)
-    self.assertEqual(ctx.exception.code,403)
-   finally:proc.terminate();proc.wait(timeout=3)
+    with self.assertRaises(urllib.error.HTTPError) as ctx:opener.open(request)
+    self.assertEqual(ctx.exception.code,403);ctx.exception.close()
+   finally:proc.terminate();proc.wait(timeout=3);proc.stderr.close()
 
 class HistoryTests(unittest.TestCase):
  def test_old_middle_latest_and_backup_restore(self):
