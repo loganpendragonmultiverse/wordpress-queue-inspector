@@ -1,0 +1,7 @@
+# Representative workflow comparison
+
+The included `samples/incident` fixture has an overdue action, repeated failures, a WP-Cron event and three captures. `python3 -m wqi compare samples/incident --baseline-index 1 --followup-index 2` and the local browser report show the recorded failed-to-complete action, remaining findings, capture coverage and operator notes in one handoff. A vanished item would be labelled `no-longer-observed`, never `complete`.
+
+Action Scheduler already has a capable [administration screen](https://actionscheduler.org/admin/) for status filtering, hook/action/claim search, per-action logs, sorting and manual execution. [WP Crontrol](https://wordpress.org/plugins/wp-crontrol/) already lists WP-Cron events, callbacks and schedules, warns about missed events, and exports CSV. Neither is represented here as lacking these features. They are the right tools for live inspection and management.
+
+For this fixture, a spreadsheet reconciliation would need action rows from each capture, a separate cron list, identity matching, coverage/count notes and a manually written caution about disappearance. Queue Inspector records those relationships and caveats in the incident report. This is a clearer *handoff format* for the example, not a measured claim of time saved. We did not conduct a side-by-side operator trial in the two admin interfaces or a spreadsheet application; that comparison remains unverified. The offline report is less detailed than per-action admin logs because it deliberately omits raw messages and arguments.

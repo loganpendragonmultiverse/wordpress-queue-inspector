@@ -1,0 +1,7 @@
+# Development
+
+Python 3.10+ standard library. Run `python3 -m unittest discover -s tests -v` from the repository root. `python3 -m wqi --help` shows commands. No external dependencies or build step.
+
+The exporter is intentionally separate. It is evaluated under WP-CLI after WordPress loads. Use a disposable WordPress site for integration testing; no client install is included in this project's release authorization. Keep collection read-only and mark partial scope honestly. Never add a repair, retry, delete, or reschedule action to this tool.
+
+The incident save operation writes a temporary sibling directory then renames it atomically. Later captures and manifest updates use temporary files and atomic replacement; a crash before manifest replacement leaves an uncommitted capture file for operator recovery. Backup restore validates member names and snapshot hashes before committing a directory. A failed import can leave a temporary directory if the process is killed; remove it only after examining the files. Reopening verifies snapshot hashes. The browser view loads the whole validated incident into memory. The 100,000-job browser behavior was exercised in Linux Chromium on a synthetic fixture; other hardware, data shapes and browsers may differ. See TESTING.md for measured results and the collector memory limit.

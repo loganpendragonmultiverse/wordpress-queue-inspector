@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.wqi-*/
+*.html
+*.tar.gz
+.forge-write-*.lock

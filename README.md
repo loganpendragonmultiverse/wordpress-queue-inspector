@@ -1,1 +1,50 @@
-WordPress Queue Inspector
+# WordPress Queue Inspector
+
+A local incident workspace for WP-Cron and Action Scheduler evidence. It never runs, deletes or reschedules jobs. Bring in read-only snapshots, see cautious findings, and document what changed. It uses only the Python standard library for analysis and a WP-CLI bootstrapped PHP exporter for collection.
+
+![Sample incident workspace](screenshots/incident.png)
+
+## Quick start
+
+Python 3.10+:
+
+```sh
+python3 -m wqi inspect samples/baseline.json
+python3 -m wqi jobs samples/baseline.json --state failed --min-age 60 --group-by hook
+python3 -m wqi compare samples/baseline.json samples/followup.json
+python3 -m wqi new ./my-incident samples/baseline.json samples/followup.json --notes 'Runner checked separately'
+python3 -m wqi add ./my-incident samples/latest.json
+python3 -m wqi note ./my-incident 'Follow-up reviewed' --append
+python3 -m wqi history ./my-incident
+python3 -m wqi compare ./my-incident --baseline-index 1 --followup-index 2
+python3 -m wqi report ./my-incident --format html --output report.html
+python3 -m wqi backup ./my-incident my-incident.zip
+python3 -m wqi restore my-incident.zip ./restored-incident
+python3 -m wqi serve ./my-incident
+```
+
+Open `http://127.0.0.1:8765/` for the searchable, paginated local browser view and report. The server binds to loopback only; Ctrl-C stops it. Use `add` to append later snapshots. The history command lists capture indices; comparisons must use an older baseline and later follow-up. Use `backup` and `restore` for a portable ZIP. `incident.json` contains SHA-256 checks for every snapshot file; a restored copy is verified on open. Reports are intended for review before sharing.
+
+## Collect from a site
+
+Only an operator with separate authorization should run the exporter. With WP-CLI installed and a disposable or approved WordPress site, run:
+
+```sh
+wp eval-file exporter/wqi-export.php /absolute/path/baseline.json SITE_PSEUDONYM --hook=init
+```
+
+Run it again after the operator's own investigation with a different output path. The exporter does not install a plugin or call mutating queue APIs. WordPress and plugin bootstrap may itself have side effects. It selects Action Scheduler rows in pages and reads the WP-Cron array. It omits action arguments, raw log messages, claim contents, site URL, secrets, and paths. Opaque claim IDs and creation times are collected where the default claims table allows it. Hook names and IDs may still be sensitive; review exported files and reports. The pseudonym must be stable across captures. Missing tables and database read errors produce partial coverage, not a healthy verdict. Hard bounds are 100,000 total jobs, 500,000 retained logs and 64 MiB per snapshot. The synthetic 100,000-job exporter test passed with PHP memory_limit 256 MiB and failed at 128 MiB; use at least 256 MiB for collection near this bound, with room for the site and plugins. Truncated captures are marked partial. The source's counts are reconciled to rows; changes during capture can make a count partial. No lock is taken.
+
+## Interpretation
+
+An overdue item means its scheduled time is more than 60 minutes before capture end while pending/scheduled. Two failed actions on the same hook produce a repeated-failure finding. Findings state evidence and uncertainty. `DISABLE_WP_CRON` may coexist with a valid external runner. The app does not infer plugin ownership, PHP causation, or runtime dependencies from names. A vanished action is only **no longer observed**. Missing history, pruned logs and partial captures limit conclusions. Recurring WP-Cron events use hook, recurrence and a hashed argument fingerprint; collisions are marked ambiguous. Timestamps must include UTC offset.
+
+The browser view supports keyboard navigation via native controls, persists selected job IDs across pages and filters in browser local storage, and shows 100 jobs per page. Search, state, age and grouping controls use the same selection engine as the CLI `jobs` command. The capture selector shows any saved snapshot; the comparison form lets you choose an older and later capture. Operator notes can be edited in the local browser or CLI and appear in reports. The browser downloads Markdown or JSON reports and displays HTML reports from the same analysis engine. CLI and browser use the same core. This is an offline evidence viewer, not a live queue manager.
+
+## Data and limits
+
+Snapshot format is documented in [SCHEMA.md](SCHEMA.md). Imported data is untrusted: no code execution, PHP serialization or raw HTML rendering. JSON files are limited to 64 MiB and 100,000 jobs. A reproducible 100,000-action local server benchmark is documented in TESTING.md. The incident directory and reports stay local unless the operator shares them. The program has no network client or analytics. Python 3.12 on Linux and the named disposable WordPress configuration in [TESTING.md](TESTING.md) were exercised; other platforms need separate validation.
+
+## Development
+
+See [DEVELOPMENT.md](DEVELOPMENT.md), [CHANGELOG.md](CHANGELOG.md), and [SECURITY.md](SECURITY.md). MIT license.
