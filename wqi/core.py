@@ -187,15 +187,17 @@ def compare(before: dict, after: dict) -> dict:
 def report(before: dict, after: dict | None = None, notes: str = "", format: str = "markdown") -> str:
     analysis = findings(before)
     change = compare(before, after) if after else None
-    lines = ["# WordPress Queue Inspector incident", "", f"Site: {before['site']}", f"Baseline: {before['captured_start']} to {before['captured_end']}", f"Follow-up: {after['captured_start']} to {after['captured_end']}" if after else "Follow-up: not supplied", "", "## Coverage"]
+    def md(value):
+        return re.sub(r"([\\`*_{}\[\]()#+.!|>~-])", r"\\\1", html.escape(str(value), quote=False))
+    lines = ["# WordPress Queue Inspector incident", "", f"Site: {md(before['site'])}", f"Baseline: {md(before['captured_start'])} to {md(before['captured_end'])}", f"Follow-up: {md(after['captured_start'])} to {md(after['captured_end'])}" if after else "Follow-up: not supplied", "", "## Coverage"]
     for name, part in before["coverage"].items():
-        lines.append(f"- {name}: {'complete' if part['complete'] else 'partial'}; source count {part['source_count']}")
+        lines.append(f"- {md(name)}: {'complete' if part['complete'] else 'partial'}; source count {part['source_count']}")
     lines += ["", "## Findings"]
-    lines += [f"- {item['rule']} {item['job']}: {item['evidence']}. Uncertainty: {item['uncertainty']}" for item in analysis] or ["- No finding under the configured rules; this does not establish health."]
+    lines += [f"- {md(item['rule'])} {md(item['job'])}: {md(item['evidence'])}. Uncertainty: {md(item['uncertainty'])}" for item in analysis] or ["- No finding under the configured rules; this does not establish health."]
     if change:
         lines += ["", "## Comparison", f"Scope complete: {change['complete_scope']}", change["caution"]]
-        lines += [f"- {r['identity']}: {r['change']} ({r.get('before')} → {r.get('after')})" for r in change["rows"]]
-    lines += ["", "## Operator observations", notes or "None supplied.", "", "## Handoff checklist", "- Confirm runner configuration independently.", "- Review source coverage, timestamps and missing logs.", "- Verify repair effects using direct site evidence."]
+        lines += [f"- {md(r['identity'])}: {md(r['change'])} ({md(r.get('before'))} → {md(r.get('after'))})" for r in change["rows"]]
+    lines += ["", "## Operator observations", md(notes) if notes else "None supplied.", "", "## Handoff checklist", "- Confirm runner configuration independently.", "- Review source coverage, timestamps and missing logs.", "- Verify repair effects using direct site evidence."]
     if format == "markdown": return "\n".join(lines) + "\n"
     if format == "html": return "<!doctype html><meta charset='utf-8'><title>Queue incident</title><main><pre>" + html.escape("\n".join(lines)) + "</pre></main>"
     if format == "json": return json.dumps({"baseline": {k: before[k] for k in ("site", "captured_start", "captured_end", "coverage")}, "findings": analysis, "comparison": change, "notes": notes}, indent=2) + "\n"
@@ -232,6 +234,9 @@ def load_history(directory: str | Path):
     directory = Path(directory)
     manifest = json.loads((directory / "incident.json").read_text())
     if manifest.get("schema") != "wqi.incident/1": raise ValueError("unsupported incident format")
+    notes = manifest.get("notes")
+    if not isinstance(notes, str) or len(notes) > 4000 or any(ord(char) < 32 and char not in "\n\t" for char in notes):
+        raise ValueError("incident notes must be at most 4000 printable characters")
     if not isinstance(manifest.get("files"), dict) or not manifest["files"]:
         raise ValueError("incident has no captures")
     names = ["baseline.json"] + (["followup.json"] if "followup.json" in manifest["files"] else [])
@@ -242,7 +247,7 @@ def load_history(directory: str | Path):
             raise ValueError("incident hash mismatch")
     captures = [read_snapshot(directory / name) for name in names]
     for older, newer in zip(captures, captures[1:]): compare(older, newer)
-    return captures, manifest["notes"]
+    return captures, notes
 
 
 def add_capture(directory: str | Path, path: str | Path):

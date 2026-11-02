@@ -60,6 +60,9 @@ class CoreTests(unittest.TestCase):
  def test_html_escaped_and_incident_hashes(self):
   x=copy.deepcopy(BASE);x['jobs'][0]['hook']='<script>alert(1)</script>'
   self.assertNotIn('<script>',report(x,notes='<script>',format='html'))
+  markdown=report(x,notes='<script>\n# false heading',format='markdown')
+  self.assertNotIn('<script>',markdown)
+  self.assertNotIn('\n# false heading',markdown)
   with tempfile.TemporaryDirectory() as root:
    source=Path(root)/'source.json';source.write_text(json.dumps(x));dest=Path(root)/'incident'
    save_incident(dest,source,notes='observed');self.assertEqual(load_incident(dest)[2],'observed')
