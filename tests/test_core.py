@@ -131,6 +131,15 @@ class HistoryTests(unittest.TestCase):
    self.assertEqual(len(load_history(restored)[0]),3)
    self.assertEqual((incident/'incident.json').read_bytes(),(restored/'incident.json').read_bytes())
    with self.assertRaises(ValueError):add_capture(incident,paths[0])
+ def test_notes_update_and_interrupted_write(self):
+  from unittest.mock import patch
+  from wqi.core import update_notes
+  with tempfile.TemporaryDirectory() as root:
+   source=Path(root)/'source.json';source.write_text(json.dumps(BASE));incident=Path(root)/'incident';save_incident(incident,source,notes='first')
+   update_notes(incident,'second',append=True);self.assertEqual(load_incident(incident)[2],'first\nsecond')
+   with patch('wqi.core.os.replace',side_effect=OSError('interrupted')):
+    with self.assertRaises(OSError):update_notes(incident,'lost')
+   self.assertEqual(load_incident(incident)[2],'first\nsecond')
  def test_interrupted_backup_leaves_no_archive(self):
   from unittest.mock import patch
   from wqi.core import backup_incident

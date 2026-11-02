@@ -17,5 +17,26 @@ const {chromium}=require('playwright');const fs=require('fs');const cp=require('
   await page.goto(`http://127.0.0.1:${port}/?page=4`);
   if(!(await page.locator('input.job-select[value="action:300"]').isChecked()))throw Error('page four selection lost');
   console.log('PASS Chromium selection across pages and filters');
+  const historyPath=path.join(os.tmpdir(),`wqi-browser-incident-${process.pid}`);fs.cpSync(path.join(root,'samples/incident'),historyPath,{recursive:true});
+  const historyServer=cp.spawn('python3',['-m','wqi','serve',historyPath,'--port','19789'],{cwd:root});
+  try {
+    for(let i=0;i<50;i++){try{await page.goto('http://127.0.0.1:19789/?capture=2');break}catch{await new Promise(r=>setTimeout(r,100))}}
+    if(!(await page.locator('body').innerText()).includes('Viewing capture'))throw Error('capture picker absent');
+    if((await page.locator('#capture option').count())!==3)throw Error('history options incomplete');
+    await page.goto('http://127.0.0.1:19789/report?baseline=1&followup=2');
+    if(!(await page.locator('pre').innerText()).includes('failed → complete'))throw Error('middle to latest comparison wrong');
+    await page.goto('http://127.0.0.1:19789/?capture=2');
+    await page.locator('#notes').fill('Operator verified fixture');await page.getByRole('button',{name:'Save notes'}).click();
+    await page.goto('http://127.0.0.1:19789/report?baseline=1&followup=2');
+    if(!(await page.locator('pre').innerText()).includes('Operator verified fixture'))throw Error('saved note missing from report');
+    const jsonReport=await page.request.get('http://127.0.0.1:19789/report?baseline=1&followup=2&format=json');
+    if(jsonReport.status()!==200 || !(await jsonReport.json()).comparison)throw Error('JSON report failed');
+    const markdownReport=await page.request.get('http://127.0.0.1:19789/report?baseline=1&followup=2&format=markdown');
+    if(markdownReport.status()!==200 || !(markdownReport.headers()['content-disposition']||'').includes('wqi-report.md'))throw Error('Markdown download failed');
+    const bad=await page.goto('http://127.0.0.1:19789/report?baseline=2&followup=1');
+    if(bad.status()!==400)throw Error('reverse baseline accepted');
+    console.log('PASS Chromium three-capture selection and chronological comparison');
+  } finally {historyServer.kill();fs.rmSync(historyPath,{recursive:true,force:true})}
+
  }finally{await browser.close();server.kill();fs.rmSync(file,{force:true})}
 })();

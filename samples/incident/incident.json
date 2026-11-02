@@ -4,6 +4,7 @@
   "notes": "Fixture: operator checked the runner separately; compare recorded completion without inferring a cause.",
   "files": {
     "baseline.json": "2c8596c6b2df34e48029e34fea12bb31f18e83a944c1307942c8c7ba7e2e94b3",
-    "followup.json": "269ff9aad34cf638502509e042b623d11e5289f30a3b117166d60c6d72f62da3"
+    "followup.json": "269ff9aad34cf638502509e042b623d11e5289f30a3b117166d60c6d72f62da3",
+    "capture-002.json": "a4526d0ee0be20bb0dda68958edba09c374177ebc7f404521673b290c2901c76"
   }
 }

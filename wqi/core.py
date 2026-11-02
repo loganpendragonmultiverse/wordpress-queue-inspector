@@ -205,6 +205,8 @@ def report(before: dict, after: dict | None = None, notes: str = "", format: str
 def save_incident(directory: str | Path, before_path: str | Path, after_path: str | Path | None = None, notes: str = ""):
     directory = Path(directory)
     if directory.exists(): raise ValueError("incident directory already exists")
+    if not isinstance(notes, str) or len(notes) > 4000 or any(ord(char) < 32 and char not in "\n\t" for char in notes):
+        raise ValueError("notes must be at most 4000 printable characters")
     before = read_snapshot(before_path)
     after = read_snapshot(after_path) if after_path else None
     if after: compare(before, after)
@@ -260,6 +262,25 @@ def add_capture(directory: str | Path, path: str | Path):
         os.replace(temp_name, directory / name)
         manifest["files"][name] = hashlib.sha256((directory / name).read_bytes()).hexdigest()
         fd, temp_name = tempfile.mkstemp(prefix=".wqi-manifest-", dir=directory)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(manifest, stream, indent=2); stream.flush(); os.fsync(stream.fileno())
+        os.replace(temp_name, manifest_path)
+    finally:
+        if os.path.exists(temp_name): os.unlink(temp_name)
+
+
+def update_notes(directory: str | Path, value: str, append: bool = False):
+    directory = Path(directory)
+    load_history(directory)
+    if not isinstance(value, str) or len(value) > 4000 or any(ord(char) < 32 and char not in "\n\t" for char in value):
+        raise ValueError("notes must be at most 4000 printable characters")
+    manifest_path = directory / "incident.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    combined = (manifest.get("notes", "") + "\n" + value).strip() if append else value
+    if len(combined) > 4000: raise ValueError("combined notes exceed 4000 characters")
+    manifest["notes"] = combined
+    fd, temp_name = tempfile.mkstemp(prefix=".wqi-note-", dir=directory)
+    try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             json.dump(manifest, stream, indent=2); stream.flush(); os.fsync(stream.fileno())
         os.replace(temp_name, manifest_path)
