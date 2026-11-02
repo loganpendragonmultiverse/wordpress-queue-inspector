@@ -34,6 +34,8 @@ class CoreTests(unittest.TestCase):
  def test_recorded_completion(self):
   later=copy.deepcopy(BASE);later['captured_start']='2026-11-01T13:00:00Z';later['captured_end']='2026-11-01T13:01:00Z';later['jobs'][0]['status']='complete'
   self.assertIn('progressed',[x['change'] for x in compare(BASE,later)['rows']])
+  self.assertIn('followup_findings',json.loads(report(BASE,later,format='json')))
+  self.assertIn('## Follow-up findings',report(BASE,later))
  def test_ambiguous_cron(self):
   x=copy.deepcopy(BASE);x['jobs'].append(dict(x['jobs'][-1],id='c2'));x['coverage']['cron']['source_count']=2
   later=copy.deepcopy(x);later['captured_start']='2026-11-01T13:00:00Z';later['captured_end']='2026-11-01T13:01:00Z'
@@ -89,8 +91,9 @@ class BrowserTests(unittest.TestCase):
   import socket, subprocess, sys, time, urllib.request, urllib.error
   x=copy.deepcopy(BASE)
   x['jobs']=[{'kind':'action','id':str(i),'hook':'bulk_hook','group':'batch','status':'pending','scheduled':'2026-11-01T12:00:00Z'} for i in range(301)]
-  x['logs']=[{'action_id':'300','message':'redacted','time':'2026-11-01T12:00:00Z'}]
+  x['logs']=[{'action_id':'300','message':'later','time':'2026-11-01T12:00:00Z'},{'action_id':'300','message':'earlier','time':'2026-11-01T12:30:00+01:00'}]
   x['coverage']['action']['source_count']=301;x['coverage']['cron']['source_count']=0
+  x['coverage']['log']['source_count']=2
   with tempfile.TemporaryDirectory() as root:
    p=Path(root)/'input.json';p.write_text(json.dumps(x))
    with socket.socket() as s:s.bind(('127.0.0.1',0));port=s.getsockname()[1]
@@ -108,7 +111,8 @@ class BrowserTests(unittest.TestCase):
     if response is None: raise AssertionError(f'local server failed: {last_error}; process exit {proc.poll()}')
     body=response.read().decode();response.close();self.assertIn('>300</td>',body);self.assertNotIn('>299</td>',body)
     with opener.open(f'http://127.0.0.1:{port}/logs') as log_response:
-     self.assertIn('Action log timeline',log_response.read().decode())
+     log_body=log_response.read().decode();self.assertIn('Action log timeline',log_body)
+     self.assertLess(log_body.index('earlier'),log_body.index('later'))
     request=urllib.request.Request(f'http://127.0.0.1:{port}/',headers={'Host':'evil.example'})
     with self.assertRaises(urllib.error.HTTPError) as ctx:opener.open(request)
     self.assertEqual(ctx.exception.code,403);ctx.exception.close()

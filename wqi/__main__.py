@@ -5,7 +5,7 @@ import secrets
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote_plus, urlsplit
-from .core import VERSION, add_capture, backup_incident, compare, findings, load_history, read_snapshot, report, restore_incident, save_incident, update_notes
+from .core import VERSION, add_capture, backup_incident, compare, findings, iso, load_history, read_snapshot, report, restore_incident, save_incident, update_notes
 
 def main():
     p = argparse.ArgumentParser(prog="wqi", description="Offline WordPress queue incident evidence")
@@ -108,7 +108,7 @@ def serve(path: str, port: int):
                 if format != "html": download = "wqi-report." + ("md" if format == "markdown" else "json")
             elif url.path == "/logs":
                 page = max(1, min(100000, int(qs.get("page", ["1"])[0]) if qs.get("page", ["1"])[0].isdigit() else 1))
-                logs = sorted(active["logs"], key=lambda log: log["time"])
+                logs = sorted(active["logs"], key=lambda log: iso(log["time"]))
                 rows = logs[(page-1)*100:page*100]
                 links = " ".join(f'<a href="/logs?capture={capture_index}&page={n}">{n}</a>' for n in range(max(1,page-1), min((len(logs)+99)//100,page+1)+1))
                 trs = "".join("<tr>" + "".join("<td>"+escape(str(log[k]))+"</td>" for k in ("time","action_id","message")) + "</tr>" for log in rows)

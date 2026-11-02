@@ -186,6 +186,7 @@ def compare(before: dict, after: dict) -> dict:
 
 def report(before: dict, after: dict | None = None, notes: str = "", format: str = "markdown") -> str:
     analysis = findings(before)
+    followup_analysis = findings(after) if after else None
     change = compare(before, after) if after else None
     def md(value):
         return re.sub(r"([\\`*_{}\[\]()#+.!|>~-])", r"\\\1", html.escape(str(value), quote=False))
@@ -195,12 +196,14 @@ def report(before: dict, after: dict | None = None, notes: str = "", format: str
     lines += ["", "## Findings"]
     lines += [f"- {md(item['rule'])} {md(item['job'])}: {md(item['evidence'])}. Uncertainty: {md(item['uncertainty'])}" for item in analysis] or ["- No finding under the configured rules; this does not establish health."]
     if change:
+        lines += ["", "## Follow-up findings"]
+        lines += [f"- {md(item['rule'])} {md(item['job'])}: {md(item['evidence'])}. Uncertainty: {md(item['uncertainty'])}" for item in followup_analysis] or ["- No finding under the configured rules; this does not establish health."]
         lines += ["", "## Comparison", f"Scope complete: {change['complete_scope']}", change["caution"]]
         lines += [f"- {md(r['identity'])}: {md(r['change'])} ({md(r.get('before'))} → {md(r.get('after'))})" for r in change["rows"]]
     lines += ["", "## Operator observations", md(notes) if notes else "None supplied.", "", "## Handoff checklist", "- Confirm runner configuration independently.", "- Review source coverage, timestamps and missing logs.", "- Verify repair effects using direct site evidence."]
     if format == "markdown": return "\n".join(lines) + "\n"
     if format == "html": return "<!doctype html><meta charset='utf-8'><title>Queue incident</title><main><pre>" + html.escape("\n".join(lines)) + "</pre></main>"
-    if format == "json": return json.dumps({"baseline": {k: before[k] for k in ("site", "captured_start", "captured_end", "coverage")}, "findings": analysis, "comparison": change, "notes": notes}, indent=2) + "\n"
+    if format == "json": return json.dumps({"baseline": {k: before[k] for k in ("site", "captured_start", "captured_end", "coverage")}, "findings": analysis, "followup_findings": followup_analysis, "comparison": change, "notes": notes}, indent=2) + "\n"
     raise ValueError("format must be markdown, html or json")
 
 
