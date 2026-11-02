@@ -18,7 +18,7 @@ jobs:
       - name: Package
         run: |
           mkdir -p dist/wordpress-queue-inspector-${GITHUB_REF_NAME}
-          cp -R wqi exporter samples screenshots README.md SCHEMA.md DEVELOPMENT.md TESTING.md CHANGELOG.md SECURITY.md LICENSE dist/wordpress-queue-inspector-${GITHUB_REF_NAME}/
+          cp -R wqi exporter samples screenshots README.md SCHEMA.md DEVELOPMENT.md TESTING.md COMPARISON.md CHANGELOG.md SECURITY.md LICENSE dist/wordpress-queue-inspector-${GITHUB_REF_NAME}/
           find dist -type d -name __pycache__ -prune -exec rm -rf {} +
           tar -czf dist/wordpress-queue-inspector-${GITHUB_REF_NAME}.tar.gz -C dist wordpress-queue-inspector-${GITHUB_REF_NAME}
           cd dist && sha256sum wordpress-queue-inspector-${GITHUB_REF_NAME}.tar.gz > SHA256SUMS.txt
