@@ -21,6 +21,7 @@ foreach ($cron as $timestamp => $hooks) {
                 'hook'=>substr($hook,0,512), 'group'=>'', 'status'=>'scheduled',
                 'scheduled'=>gmdate('c',(int)$timestamp),
                 'recurrence'=>substr((string)($event['schedule'] ?? ''),0,512),
+                'arg_fingerprint'=>hash('sha256',(string)$key),
                 'callback_present'=>has_action($hook)!==false];
         }
     }

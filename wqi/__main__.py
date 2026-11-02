@@ -4,7 +4,7 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
-from .core import VERSION, compare, findings, load_incident, read_snapshot, report, save_incident
+from .core import VERSION, add_capture, backup_incident, compare, findings, load_history, read_snapshot, report, restore_incident, save_incident
 
 def main():
     p = argparse.ArgumentParser(prog="wqi", description="Offline WordPress queue incident evidence")
@@ -12,18 +12,36 @@ def main():
     for command in ("inspect", "compare", "report"):
         q = sub.add_parser(command); q.add_argument("baseline")
         if command != "inspect": q.add_argument("followup", nargs="?")
+        if command != "inspect":
+            q.add_argument("--baseline-index", type=int, default=0)
+            q.add_argument("--followup-index", type=int, default=-1)
         if command == "report":
             q.add_argument("--format", choices=("markdown", "html", "json"), default="markdown")
             q.add_argument("--notes", default="")
             q.add_argument("--output")
     q = sub.add_parser("new"); q.add_argument("directory"); q.add_argument("baseline"); q.add_argument("followup", nargs="?"); q.add_argument("--notes", default="")
+    q = sub.add_parser("add"); q.add_argument("directory"); q.add_argument("snapshot")
+    q = sub.add_parser("history"); q.add_argument("directory")
+    q = sub.add_parser("backup"); q.add_argument("directory"); q.add_argument("archive")
+    q = sub.add_parser("restore"); q.add_argument("archive"); q.add_argument("directory")
     q = sub.add_parser("serve"); q.add_argument("incident"); q.add_argument("--port", type=int, default=8765)
     args = p.parse_args()
     try:
         if args.command == "new": save_incident(args.directory, args.baseline, args.followup, args.notes); print(args.directory)
+        elif args.command == "add": add_capture(args.directory, args.snapshot); print(args.directory)
+        elif args.command == "backup": backup_incident(args.directory, args.archive); print(args.archive)
+        elif args.command == "restore": restore_incident(args.archive, args.directory); print(args.directory)
+        elif args.command == "history":
+            captures, _ = load_history(args.directory)
+            print(json.dumps([{"index":i,"start":x["captured_start"],"end":x["captured_end"],"coverage":x["coverage"]} for i,x in enumerate(captures)],indent=2))
         elif args.command == "serve": serve(args.incident, args.port)
         else:
-            if Path(args.baseline).is_dir(): before, follow, notes = load_incident(args.baseline)
+            if Path(args.baseline).is_dir():
+                captures, notes = load_history(args.baseline)
+                if args.command != "inspect" and (not -len(captures) <= args.baseline_index < len(captures) or not -len(captures) <= args.followup_index < len(captures)):
+                    raise ValueError("capture index out of range; use history to list captures")
+                before = captures[args.baseline_index] if args.command != "inspect" else captures[0]
+                follow = captures[args.followup_index] if args.command != "inspect" and len(captures)>1 else None
             else: before, follow, notes = read_snapshot(args.baseline), None, ""
             if getattr(args, "followup", None): follow = read_snapshot(args.followup)
             if args.command == "inspect": output = json.dumps({"site": before["site"], "coverage": before["coverage"], "findings": findings(before)}, indent=2)
@@ -37,7 +55,8 @@ def main():
         p.exit(2, f"wqi: {error}\n")
 
 def serve(path: str, port: int):
-    before, after, notes = load_incident(path) if Path(path).is_dir() else (read_snapshot(path), None, "")
+    captures, notes = load_history(path) if Path(path).is_dir() else ([read_snapshot(path)], "")
+    before, after = captures[0], captures[-1] if len(captures)>1 else None
     if port < 1 or port > 65535: raise ValueError("port out of range")
     jobs = before["jobs"]
     class Handler(BaseHTTPRequestHandler):
@@ -46,8 +65,15 @@ def serve(path: str, port: int):
             if self.headers.get("Host", "").split(":")[0] not in ("127.0.0.1", "localhost"):
                 self.send_error(403); return
             url = urlsplit(self.path); qs = parse_qs(url.query)
-            if url.path == "/report":
-                body = report(before, after, notes, "html"); mime = "text/html; charset=utf-8"
+            if url.path == "/ui.js":
+                body = (Path(__file__).with_name("ui.js")).read_text(encoding="utf-8"); mime = "application/javascript; charset=utf-8"
+            elif url.path == "/report":
+                try:
+                    baseline_index = int(qs.get("baseline", ["0"])[0]); followup_index = int(qs.get("followup", [str(len(captures)-1)])[0])
+                    if baseline_index < 0 or followup_index < 0 or baseline_index >= len(captures) or followup_index >= len(captures) or (len(captures)>1 and baseline_index >= followup_index): raise ValueError()
+                except ValueError:
+                    self.send_error(400,"Choose an earlier baseline and later follow-up"); return
+                body = report(captures[baseline_index], captures[followup_index] if len(captures)>1 else None, notes, "html"); mime = "text/html; charset=utf-8"
             elif url.path == "/logs":
                 page = max(1, min(100000, int(qs.get("page", ["1"])[0]) if qs.get("page", ["1"])[0].isdigit() else 1))
                 logs = sorted(before["logs"], key=lambda log: log["time"])
@@ -62,12 +88,15 @@ def serve(path: str, port: int):
                 subset = [j for j in jobs if term in (j["hook"] + " " + j.get("group", "") + " " + j["id"]).casefold()]
                 rows = subset[(page-1)*100:page*100]
                 links = " ".join(f'<a href="/?q={escape(term, quote=True)}&page={n}">{n}</a>' for n in range(max(1,page-1), min((len(subset)+99)//100,page+1)+1))
-                trs = "".join("<tr>" + "".join("<td>"+escape(str(j.get(k,"")))+"</td>" for k in ("kind","id","hook","group","status","scheduled")) + "</tr>" for j in rows)
-                body = f'''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Queue Inspector</title><style>body{{font:1rem system-ui;max-width:90rem;margin:auto;padding:1rem;color:#17202a}}a{{color:#0645ad}}:focus-visible{{outline:3px solid orange}}table{{width:100%;border-collapse:collapse}}td,th{{padding:.5rem;border:1px solid #aaa;text-align:left}}.scroll{{overflow:auto}}</style><main><h1>WordPress Queue Inspector</h1><p>Site {escape(before['site'])} · captured {escape(before['captured_end'])}</p><p>{len(subset)} matching jobs · page {page} · <a href="/report">Incident report</a> · <a href="/logs">Action log timeline</a></p><form><label for="q">Search hook, group or ID</label> <input id="q" name="q" value="{escape(term,quote=True)}"><button>Search</button></form><nav aria-label="Pages">{links}</nav><div class="scroll"><table><thead><tr><th>Source</th><th>ID</th><th>Hook</th><th>Group</th><th>Status</th><th>Scheduled UTC</th></tr></thead><tbody>{trs}</tbody></table></div><h2>Findings</h2><ul>{''.join('<li>'+escape(f['rule']+': '+f['evidence']+' Uncertainty: '+f['uncertainty'])+'</li>' for f in findings(before))}</ul></main></html>'''
+                trs = "".join("<tr><td><input type='checkbox' class='job-select' aria-label='Select job " + escape(j['id'],quote=True) + "' value='" + escape(j['kind']+":"+j['id'],quote=True) + "'></td>" + "".join("<td>"+escape(str(j.get(k,"")))+"</td>" for k in ("kind","id","hook","group","status","scheduled")) + "</tr>" for j in rows)
+                options_before = "".join(f'<option value="{i}">{i}: {escape(c["captured_end"])}</option>' for i,c in enumerate(captures))
+                options_after = "".join(f'<option value="{i}"{" selected" if i==len(captures)-1 else ""}>{i}: {escape(c["captured_end"])}</option>' for i,c in enumerate(captures))
+                comparison_form = f'<h2>Compare captures</h2><form action="/report"><label for="baseline">Baseline</label><select id="baseline" name="baseline">{options_before}</select> <label for="followup">Follow-up</label><select id="followup" name="followup">{options_after}</select> <button>View report</button></form>' if len(captures)>1 else ''
+                body = f'''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Queue Inspector</title><style>body{{font:1rem/1.5 system-ui;margin:0;background:#f3f6fb;color:#172333}}main{{max-width:84rem;margin:2rem auto;padding:2rem;background:white;border:1px solid #dbe3ee;border-radius:1rem;box-shadow:0 8px 30px #142d4e12}}h1{{margin-top:0;font-size:2rem}}h2{{margin-top:2rem}}a{{color:#064d99}}:focus-visible{{outline:3px solid #ef9c1a;outline-offset:2px}}input,select,button{{font:inherit;padding:.35rem .5rem;border:1px solid #9eb0c5;border-radius:.4rem}}button{{background:#145ca8;color:white;border-color:#145ca8;cursor:pointer}}table{{width:100%;border-collapse:collapse;margin-top:.5rem}}td,th{{padding:.6rem;border-bottom:1px solid #dbe3ee;text-align:left;white-space:nowrap}}th{{background:#eaf2fb}}tbody tr:nth-child(even){{background:#f8fafd}}.scroll{{overflow:auto}}nav a{{margin-right:.8rem}}@media(max-width:650px){{main{{margin:0;padding:1rem;border-radius:0}}}}</style><script src="/ui.js" defer></script><main data-site="{escape(before['site'],quote=True)}" data-capture="{escape(before['captured_start'],quote=True)}"><h1>WordPress Queue Inspector</h1><p>Site {escape(before['site'])} · captured {escape(before['captured_end'])}</p><p>{len(subset)} matching jobs · page {page} · <a href="/report">Incident report</a> · <a href="/logs">Action log timeline</a></p><p id="selection-count" role="status" aria-live="polite">Selection loads in this browser</p><form><label for="q">Search hook, group or ID</label> <input id="q" name="q" value="{escape(term,quote=True)}"><button>Search</button></form><nav aria-label="Pages">{links}</nav><div class="scroll"><table><thead><tr><th>Select</th><th>Source</th><th>ID</th><th>Hook</th><th>Group</th><th>Status</th><th>Scheduled UTC</th></tr></thead><tbody>{trs}</tbody></table></div>{comparison_form}<h2>Findings</h2><ul>{''.join('<li>'+escape(f['rule']+': '+f['evidence']+' Uncertainty: '+f['uncertainty'])+'</li>' for f in findings(before))}</ul></main></html>'''
                 mime = "text/html; charset=utf-8"
             else:
                 self.send_error(404); return
-            data = body.encode(); self.send_response(200); self.send_header("Content-Type", mime); self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'"); self.send_header("X-Content-Type-Options", "nosniff"); self.send_header("Cache-Control", "no-store"); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
+            data = body.encode(); self.send_response(200); self.send_header("Content-Type", mime); self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'"); self.send_header("X-Content-Type-Options", "nosniff"); self.send_header("Cache-Control", "no-store"); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     print(f"Queue Inspector {VERSION}: http://127.0.0.1:{port}/", flush=True)
     try: server.serve_forever()

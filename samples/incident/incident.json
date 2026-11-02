@@ -1,0 +1,9 @@
+{
+  "schema": "wqi.incident/1",
+  "version": "1.0.0",
+  "notes": "Fixture: operator checked the runner separately; compare recorded completion without inferring a cause.",
+  "files": {
+    "baseline.json": "2c8596c6b2df34e48029e34fea12bb31f18e83a944c1307942c8c7ba7e2e94b3",
+    "followup.json": "269ff9aad34cf638502509e042b623d11e5289f30a3b117166d60c6d72f62da3"
+  }
+}

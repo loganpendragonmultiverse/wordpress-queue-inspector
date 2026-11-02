@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import tempfile
+import zipfile
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -85,6 +86,8 @@ def validate(snapshot: dict) -> dict:
             raise ValueError("cron status must be scheduled")
         if "recurrence" in job:
             clean_text(job["recurrence"], "recurrence")
+        if "arg_fingerprint" in job and (not isinstance(job["arg_fingerprint"], str) or not re.fullmatch(r"[a-f0-9]{64}", job["arg_fingerprint"])):
+            raise ValueError("arg_fingerprint must be a SHA-256 hex digest")
         if "callback_present" in job and not isinstance(job["callback_present"], bool):
             raise ValueError("callback_present must be boolean")
     for log in logs:
@@ -123,7 +126,9 @@ def read_snapshot(path: str | Path) -> dict:
 def fingerprint(job):
     if job["kind"] == "action":
         return ("action", job["id"])
-    return ("cron", job["hook"], job.get("recurrence", ""), job.get("group", ""))
+    if not job.get("recurrence"):
+        return ("cron-once", job["hook"], job["scheduled"], job.get("arg_fingerprint"))
+    return ("cron", job["hook"], job["recurrence"], job.get("arg_fingerprint"))
 
 
 def findings(snapshot: dict, overdue_minutes=60, repeat_failures=2) -> list[dict]:
@@ -131,14 +136,17 @@ def findings(snapshot: dict, overdue_minutes=60, repeat_failures=2) -> list[dict
     now = iso(snapshot["captured_end"])
     result = []
     failures = Counter()
+    overdue = defaultdict(list)
     for job in snapshot["jobs"]:
         delta = (now - iso(job["scheduled"])).total_seconds() / 60
         if job["status"] in ("pending", "scheduled") and delta > overdue_minutes:
-            result.append({"rule": "overdue", "job": job["id"], "evidence": f"scheduled {round(delta)} minutes before capture end; threshold {overdue_minutes}", "uncertainty": "A queued job can be healthy with a slow or external runner; scheduling alone does not establish cause."})
+            overdue[(job["kind"],job["hook"],job.get("group", ""))].append((job["id"],delta))
         if job["status"] == "failed":
             failures[job["hook"]] += 1
         if job.get("callback_present") is False:
             result.append({"rule": "missing-callback", "job": job["id"], "evidence": "No registered callback observed during export", "uncertainty": "Bootstrap context may differ from the runner."})
+    for (kind,hook,group), rows in overdue.items():
+        result.append({"rule": "overdue", "job": rows[0][0], "evidence": f"{len(rows)} {kind} jobs for hook {hook} group {group}; oldest scheduled {round(max(age for _,age in rows))} minutes before capture end; threshold {overdue_minutes}", "uncertainty": "A queued job can be healthy with a slow or external runner; scheduling alone does not establish cause."})
     for hook, count in failures.items():
         if count >= repeat_failures:
             result.append({"rule": "repeated-failures", "job": "", "evidence": f"{count} failed actions for hook {hook}; threshold {repeat_failures}", "uncertainty": "Status does not establish root cause or plugin ownership."})
@@ -168,7 +176,10 @@ def compare(before: dict, after: dict) -> dict:
         elif not b:
             change = "no-longer-observed" if complete else "unknown-partial-capture"
         else:
-            change = "unchanged" if a[0]["status"] == b[0]["status"] else "progressed" if b[0]["status"] == "complete" else "changed"
+            if a[0]["kind"] == "cron" and not a[0].get("arg_fingerprint"):
+                change = "uncertain-match"
+            else:
+                change = "unchanged" if a[0]["status"] == b[0]["status"] else "progressed" if b[0]["status"] == "complete" else "changed"
         rows.append({"identity": str(key), "change": change, "before": a[0]["status"] if a else None, "after": b[0]["status"] if b else None})
     return {"site": before["site"], "complete_scope": complete, "rows": sorted(rows, key=lambda r: r["identity"]), "caution": "No-longer-observed never proves completion. Actions can be deleted and logs pruned."}
 
@@ -211,10 +222,84 @@ def save_incident(directory: str | Path, before_path: str | Path, after_path: st
 
 
 def load_incident(directory: str | Path):
+    captures, notes = load_history(directory)
+    return captures[0], captures[-1] if len(captures) > 1 else None, notes
+
+
+def load_history(directory: str | Path):
     directory = Path(directory)
     manifest = json.loads((directory / "incident.json").read_text())
     if manifest.get("schema") != "wqi.incident/1": raise ValueError("unsupported incident format")
+    if not isinstance(manifest.get("files"), dict) or not manifest["files"]:
+        raise ValueError("incident has no captures")
+    names = ["baseline.json"] + (["followup.json"] if "followup.json" in manifest["files"] else [])
+    names += sorted(name for name in manifest["files"] if re.fullmatch(r"capture-\d{3}\.json", name))
+    if set(names) != set(manifest["files"]): raise ValueError("invalid incident capture names")
     for name, digest in manifest["files"].items():
-        if name not in ("baseline.json", "followup.json") or hashlib.sha256((directory / name).read_bytes()).hexdigest() != digest:
+        if hashlib.sha256((directory / name).read_bytes()).hexdigest() != digest:
             raise ValueError("incident hash mismatch")
-    return read_snapshot(directory / "baseline.json"), read_snapshot(directory / "followup.json") if "followup.json" in manifest["files"] else None, manifest["notes"]
+    captures = [read_snapshot(directory / name) for name in names]
+    for older, newer in zip(captures, captures[1:]): compare(older, newer)
+    return captures, manifest["notes"]
+
+
+def add_capture(directory: str | Path, path: str | Path):
+    directory = Path(directory)
+    captures, _ = load_history(directory)
+    if len(captures) >= 100: raise ValueError("incident has reached the 100-capture limit")
+    candidate = read_snapshot(path)
+    compare(captures[-1], candidate)
+    manifest_path = directory / "incident.json"
+    manifest = json.loads(manifest_path.read_text())
+    name = "followup.json" if len(captures) == 1 else f"capture-{len(captures):03d}.json"
+    if (directory / name).exists(): raise ValueError("uncommitted capture file exists; recover it before adding another")
+    fd, temp_name = tempfile.mkstemp(prefix=".wqi-capture-", dir=directory)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(Path(path).read_bytes()); stream.flush(); os.fsync(stream.fileno())
+        os.replace(temp_name, directory / name)
+        manifest["files"][name] = hashlib.sha256((directory / name).read_bytes()).hexdigest()
+        fd, temp_name = tempfile.mkstemp(prefix=".wqi-manifest-", dir=directory)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(manifest, stream, indent=2); stream.flush(); os.fsync(stream.fileno())
+        os.replace(temp_name, manifest_path)
+    finally:
+        if os.path.exists(temp_name): os.unlink(temp_name)
+
+
+def backup_incident(directory: str | Path, archive: str | Path):
+    directory, archive = Path(directory), Path(archive)
+    load_history(directory)
+    if archive.exists(): raise ValueError("backup path already exists")
+    manifest = json.loads((directory / "incident.json").read_text())
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=".wqi-backup-", dir=archive.parent)
+    os.close(fd)
+    try:
+        with zipfile.ZipFile(temp_name, "w", compression=zipfile.ZIP_DEFLATED) as package:
+            for name in ["incident.json", *manifest["files"]]: package.write(directory / name, name)
+        os.replace(temp_name, archive)
+    finally:
+        if os.path.exists(temp_name): os.unlink(temp_name)
+
+
+def restore_incident(archive: str | Path, directory: str | Path):
+    directory = Path(directory)
+    if directory.exists(): raise ValueError("restore directory already exists")
+    directory.parent.mkdir(parents=True, exist_ok=True)
+    temp = Path(tempfile.mkdtemp(prefix=".wqi-restore-", dir=directory.parent))
+    try:
+        with zipfile.ZipFile(archive) as package:
+            names = package.namelist()
+            if len(names) > 101 or len(set(names)) != len(names) or "incident.json" not in names:
+                raise ValueError("invalid backup contents")
+            if any(name != "incident.json" and name not in ("baseline.json", "followup.json") and not re.fullmatch(r"capture-\d{3}\.json", name) for name in names):
+                raise ValueError("unsafe backup member")
+            if any(info.file_size > MAX_BYTES for info in package.infolist()) or sum(info.file_size for info in package.infolist()) > 512 * 1024 * 1024:
+                raise ValueError("backup exceeds size limit")
+            for name in names:
+                (temp / name).write_bytes(package.read(name))
+        load_history(temp)
+        os.replace(temp, directory)
+    finally:
+        if temp.exists(): shutil.rmtree(temp)

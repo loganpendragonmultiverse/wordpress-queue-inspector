@@ -22,6 +22,11 @@ class CoreTests(unittest.TestCase):
   rules=[x['rule'] for x in findings(BASE)]
   self.assertIn('overdue',rules);self.assertIn('repeated-failures',rules)
   self.assertNotIn('disable_wp_cron',rules)
+ def test_partial_capture_and_timezone_offset(self):
+  x=copy.deepcopy(BASE);x['coverage']['action']={'complete':False,'source_count':None};x['jobs']=x['jobs'][3:];x['coverage']['log']={'complete':False,'source_count':None};x['logs']=[]
+  x['captured_start']='2026-11-01T14:00:00+02:00';x['captured_end']='2026-11-01T14:01:00+02:00'
+  self.assertIn('partial-capture',[r['rule'] for r in findings(x)])
+  with self.assertRaises(ValueError):validate(dict(x,schema='unknown'))
  def test_partial_does_not_prove_disappearance(self):
   later=copy.deepcopy(BASE);later['captured_start']='2026-11-01T13:00:00Z';later['captured_end']='2026-11-01T13:01:00Z'
   later['jobs']=later['jobs'][1:];later['coverage']['action']={'complete':False,'source_count':3}
@@ -33,6 +38,14 @@ class CoreTests(unittest.TestCase):
   x=copy.deepcopy(BASE);x['jobs'].append(dict(x['jobs'][-1],id='c2'));x['coverage']['cron']['source_count']=2
   later=copy.deepcopy(x);later['captured_start']='2026-11-01T13:00:00Z';later['captured_end']='2026-11-01T13:01:00Z'
   self.assertIn('ambiguous',[r['change'] for r in compare(x,later)['rows']])
+ def test_unkeyed_recurring_match_is_uncertain_and_one_shot_is_distinct(self):
+  old=copy.deepcopy(BASE);new=copy.deepcopy(BASE)
+  new['captured_start']='2026-11-01T13:00:00Z';new['captured_end']='2026-11-01T13:01:00Z'
+  self.assertIn('uncertain-match',[r['change'] for r in compare(old,new)['rows']])
+  old['jobs'][-1]['recurrence']='';new['jobs'][-1]['recurrence']=''
+  new['jobs'][-1]['scheduled']='2026-11-01T12:00:00Z'
+  changes=[r['change'] for r in compare(old,new)['rows']]
+  self.assertIn('new',changes);self.assertIn('no-longer-observed',changes)
  def test_reject_mixed_site_duplicate_timezone_and_count(self):
   for mutation in ('site','duplicate','timezone','count'):
    x=copy.deepcopy(BASE)
@@ -90,3 +103,42 @@ class BrowserTests(unittest.TestCase):
     with self.assertRaises(urllib.error.HTTPError) as ctx:urllib.request.urlopen(request)
     self.assertEqual(ctx.exception.code,403)
    finally:proc.terminate();proc.wait(timeout=3)
+
+class HistoryTests(unittest.TestCase):
+ def test_old_middle_latest_and_backup_restore(self):
+  from wqi.core import add_capture,backup_incident,restore_incident,load_history
+  with tempfile.TemporaryDirectory() as root:
+   paths=[]
+   for i,status in enumerate(('pending','failed','complete')):
+    x=copy.deepcopy(BASE)
+    x['captured_start']=f'2026-11-01T{12+i:02d}:00:00Z';x['captured_end']=f'2026-11-01T{12+i:02d}:01:00Z'
+    x['jobs'][0]['status']=status
+    p=Path(root)/f'{i}.json';p.write_text(json.dumps(x));paths.append(p)
+   incident=Path(root)/'incident';save_incident(incident,paths[0],paths[1]);add_capture(incident,paths[2])
+   captures,notes=load_history(incident)
+   self.assertEqual(len(captures),3)
+   self.assertEqual(compare(captures[0],captures[2])['rows'][0]['change'] in ('progressed','unchanged','changed'),True)
+   self.assertEqual([r for r in compare(captures[1],captures[2])['rows'] if r['identity']=="('action', '1')"][0]['change'],'progressed')
+   archive=Path(root)/'backup.zip';backup_incident(incident,archive)
+   restored=Path(root)/'restored';restore_incident(archive,restored)
+   self.assertEqual(len(load_history(restored)[0]),3)
+   self.assertEqual((incident/'incident.json').read_bytes(),(restored/'incident.json').read_bytes())
+   with self.assertRaises(ValueError):add_capture(incident,paths[0])
+ def test_interrupted_backup_leaves_no_archive(self):
+  from unittest.mock import patch
+  from wqi.core import backup_incident
+  with tempfile.TemporaryDirectory() as root:
+   source=Path(root)/'source.json';source.write_text(json.dumps(BASE));incident=Path(root)/'incident';save_incident(incident,source)
+   archive=Path(root)/'backup.zip'
+   with patch('wqi.core.zipfile.ZipFile.write',side_effect=OSError('interrupted')):
+    with self.assertRaises(OSError):backup_incident(incident,archive)
+   self.assertFalse(archive.exists());self.assertEqual(list(Path(root).glob('.wqi-backup-*')),[])
+ def test_bad_backup_member_rejected(self):
+  import zipfile
+  from wqi.core import restore_incident
+  with tempfile.TemporaryDirectory() as root:
+   archive=Path(root)/'bad.zip'
+   with zipfile.ZipFile(archive,'w') as z:
+    z.writestr('incident.json','{}');z.writestr('../escape','bad')
+   with self.assertRaises(ValueError):restore_incident(archive,Path(root)/'restored')
+   self.assertFalse((Path(root)/'escape').exists())
