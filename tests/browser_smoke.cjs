@@ -16,6 +16,12 @@ const {chromium}=require('playwright');const fs=require('fs');const cp=require('
   if(!(await page.locator('#selection-count').innerText()).includes('2 jobs selected'))throw Error('selection count wrong');
   await page.goto(`http://127.0.0.1:${port}/?page=4`);
   if(!(await page.locator('input.job-select[value="action:300"]').isChecked()))throw Error('page four selection lost');
+  await page.goto(`http://127.0.0.1:${port}/?state=complete&min_age=2&group_by=status`);
+  if(!(await page.locator('body').innerText()).includes('0 matching jobs'))throw Error('state and age filter failed');
+  if(!(await page.locator('#selection-count').innerText()).includes('2 jobs selected'))throw Error('selection lost across empty filter');
+  await page.goto(`http://127.0.0.1:${port}/?state=pending&min_age=1&group_by=status&page=4`);
+  if(!(await page.locator('input.job-select[value="action:300"]').isChecked()))throw Error('selection lost across state and age filter');
+  if(!(await page.locator('body').innerText()).includes('Grouped by status'))throw Error('state grouping absent');
   console.log('PASS Chromium selection across pages and filters');
   const historyPath=path.join(os.tmpdir(),`wqi-browser-incident-${process.pid}`);fs.cpSync(path.join(root,'samples/incident'),historyPath,{recursive:true});
   const historyServer=cp.spawn('python3',['-m','wqi','serve',historyPath,'--port','19789'],{cwd:root});

@@ -22,3 +22,5 @@ jobs:
       - run: python -m wqi compare samples/baseline.json samples/followup.json
       - run: php -l exporter/wqi-export.php
         if: runner.os == 'Linux'
+      - run: for scenario in healthy action-count-error action-page-error log-count-error cron-error job-boundary; do php -d memory_limit=512M tests/exporter_failures.php "$scenario"; done
+        if: runner.os == 'Linux'

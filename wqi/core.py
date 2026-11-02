@@ -19,6 +19,7 @@ MAX_ITEMS = 100_000
 MAX_LOGS = 500_000
 VALID_STATUS = {"pending", "in-progress", "complete", "failed", "canceled"}
 SAFE_TEXT = re.compile(r"^[^\x00-\x08\x0b\x0c\x0e-\x1f]{0,512}$")
+LOG_MARKER = "Log event (message omitted for privacy)"
 
 
 def iso(value: str) -> datetime:
@@ -42,6 +43,8 @@ def clean_text(value, label):
 def validate(snapshot: dict) -> dict:
     if not isinstance(snapshot, dict) or snapshot.get("schema") != "wqi.snapshot/1":
         raise ValueError("unsupported snapshot schema; expected wqi.snapshot/1")
+    if set(snapshot) != {"schema", "site", "captured_start", "captured_end", "source", "coverage", "jobs", "logs"}:
+        raise ValueError("snapshot has missing or undeclared fields")
     for field in ("site", "captured_start", "captured_end", "source"):
         if field not in snapshot:
             raise ValueError(f"missing {field}")
@@ -53,6 +56,8 @@ def validate(snapshot: dict) -> dict:
         raise ValueError("capture end precedes start")
     if not isinstance(snapshot["source"], dict):
         raise ValueError("source must be an object")
+    if set(snapshot["source"]) - {"wordpress", "php", "action_scheduler", "disable_wp_cron"}:
+        raise ValueError("source has undeclared fields")
     for key, value in snapshot["source"].items():
         clean_text(key, "source key")
         if isinstance(value, str):
@@ -71,6 +76,11 @@ def validate(snapshot: dict) -> dict:
         kind = job.get("kind")
         if kind not in ("action", "cron"):
             raise ValueError("job kind must be action or cron")
+        allowed = {"kind", "id", "hook", "group", "status", "scheduled"}
+        if kind == "cron": allowed |= {"recurrence", "arg_fingerprint", "callback_present"}
+        else: allowed |= {"claim_id", "claim_created"}
+        if set(job) - allowed:
+            raise ValueError("job has undeclared fields; arguments and claim data cannot be imported")
         identity = clean_text(job.get("id"), "job id")
         if not identity:
             raise ValueError("job id is required")
@@ -82,6 +92,9 @@ def validate(snapshot: dict) -> dict:
         iso(job.get("scheduled"))
         if kind == "action" and job.get("status") not in VALID_STATUS:
             raise ValueError("invalid action status")
+        if "claim_id" in job and (not isinstance(job["claim_id"], str) or not re.fullmatch(r"\d{1,20}", job["claim_id"])):
+            raise ValueError("claim_id must be a decimal ID")
+        if "claim_created" in job: iso(job["claim_created"])
         if kind == "cron" and job.get("status") != "scheduled":
             raise ValueError("cron status must be scheduled")
         if "recurrence" in job:
@@ -93,17 +106,19 @@ def validate(snapshot: dict) -> dict:
     for log in logs:
         if not isinstance(log, dict):
             raise ValueError("log must be an object")
+        if set(log) != {"action_id", "message", "time"} or log["message"] != LOG_MARKER:
+            raise ValueError("log must contain only action ID, time and the redacted event marker")
         clean_text(log.get("action_id"), "log action_id")
         clean_text(log.get("message", ""), "log message")
         iso(log.get("time"))
         if ("action", log["action_id"]) not in seen:
             raise ValueError("log references an absent action")
     coverage = snapshot.get("coverage")
-    if not isinstance(coverage, dict):
+    if not isinstance(coverage, dict) or set(coverage) != {"action", "cron", "log"}:
         raise ValueError("coverage object is required")
     for kind in ("action", "cron", "log"):
         part = coverage.get(kind)
-        if not isinstance(part, dict) or not isinstance(part.get("complete"), bool):
+        if not isinstance(part, dict) or set(part) != {"complete", "source_count"} or not isinstance(part.get("complete"), bool):
             raise ValueError(f"coverage.{kind}.complete is required")
         count = part.get("source_count")
         if count is not None and (not isinstance(count, int) or count < 0):
@@ -127,7 +142,7 @@ def fingerprint(job):
     if job["kind"] == "action":
         return ("action", job["id"])
     if not job.get("recurrence"):
-        return ("cron-once", job["hook"], job["scheduled"], job.get("arg_fingerprint"))
+        return ("cron-once", job["hook"], iso(job["scheduled"]).isoformat(), job.get("arg_fingerprint"))
     return ("cron", job["hook"], job["recurrence"], job.get("arg_fingerprint"))
 
 
@@ -145,6 +160,11 @@ def findings(snapshot: dict, overdue_minutes=60, repeat_failures=2) -> list[dict
             failures[job["hook"]] += 1
         if job.get("callback_present") is False:
             result.append({"rule": "missing-callback", "job": job["id"], "evidence": "No registered callback observed during export", "uncertainty": "Bootstrap context may differ from the runner."})
+        if job["kind"] == "action" and job["status"] == "in-progress" and job.get("claim_id", "0") != "0":
+            if "claim_created" in job and (now-iso(job["claim_created"])).total_seconds()/60 > overdue_minutes:
+                result.append({"rule": "old-claim", "job": job["id"], "evidence": f"Claim {job['claim_id']} was created more than {overdue_minutes} minutes before capture end", "uncertainty": "An old claim is investigation evidence, not proof the runner is stuck; verify the worker independently."})
+            elif "claim_created" not in job:
+                result.append({"rule": "claim-time-unavailable", "job": job["id"], "evidence": f"In-progress action has claim {job['claim_id']} without a collected creation time", "uncertainty": "Claim age cannot be assessed from this snapshot."})
     for (kind,hook,group), rows in overdue.items():
         result.append({"rule": "overdue", "job": rows[0][0], "evidence": f"{len(rows)} {kind} jobs for hook {hook} group {group}; oldest scheduled {round(max(age for _,age in rows))} minutes before capture end; threshold {overdue_minutes}", "uncertainty": "A queued job can be healthy with a slow or external runner; scheduling alone does not establish cause."})
     for hook, count in failures.items():
@@ -153,6 +173,23 @@ def findings(snapshot: dict, overdue_minutes=60, repeat_failures=2) -> list[dict
     if any(not snapshot["coverage"][k]["complete"] for k in ("action", "cron", "log")):
         result.append({"rule": "partial-capture", "job": "", "evidence": "One or more source counts or pagination bounds are incomplete", "uncertainty": "Absence and totals cannot be interpreted as whole-site evidence."})
     return result
+
+
+def select_jobs(snapshot: dict, term: str = "", state: str = "", min_age: int = 0, group_by: str = "hook") -> dict:
+    validate(snapshot)
+    if state not in ("", "pending", "in-progress", "complete", "failed", "canceled", "scheduled"):
+        raise ValueError("invalid state filter")
+    if not isinstance(min_age, int) or not 0 <= min_age <= 525600:
+        raise ValueError("minimum age must be 0 to 525600 minutes")
+    if group_by not in ("hook", "group", "status"):
+        raise ValueError("group_by must be hook, group or status")
+    end = iso(snapshot["captured_end"])
+    query = term.casefold()
+    rows = [j for j in snapshot["jobs"] if query in (j["hook"] + " " + j.get("group", "") + " " + j["id"]).casefold()
+            and (not state or j["status"] == state)
+            and (end - iso(j["scheduled"])).total_seconds() >= min_age * 60]
+    groups = Counter(j.get(group_by, "") for j in rows)
+    return {"jobs": rows, "group_by": group_by, "groups": sorted(groups.items(), key=lambda item: (-item[1], item[0]))}
 
 
 def compare(before: dict, after: dict) -> dict:
@@ -179,7 +216,7 @@ def compare(before: dict, after: dict) -> dict:
             if a[0]["kind"] == "cron" and not a[0].get("arg_fingerprint"):
                 change = "uncertain-match"
             else:
-                change = "unchanged" if a[0]["status"] == b[0]["status"] else "progressed" if b[0]["status"] == "complete" else "changed"
+                change = "claim-changed" if a[0]["status"] == b[0]["status"] == "in-progress" and a[0].get("claim_id") != b[0].get("claim_id") else "unchanged" if a[0]["status"] == b[0]["status"] else "progressed" if b[0]["status"] == "complete" else "changed"
         rows.append({"identity": str(key), "change": change, "before": a[0]["status"] if a else None, "after": b[0]["status"] if b else None})
     return {"site": before["site"], "complete_scope": complete, "rows": sorted(rows, key=lambda r: r["identity"]), "caution": "No-longer-observed never proves completion. Actions can be deleted and logs pruned."}
 

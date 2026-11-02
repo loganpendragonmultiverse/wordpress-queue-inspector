@@ -3,7 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from wqi.core import compare, findings, load_incident, read_snapshot, report, save_incident, validate
+from wqi.core import compare, findings, load_incident, read_snapshot, report, save_incident, select_jobs, validate
 
 BASE = {
  'schema':'wqi.snapshot/1','site':'shop-example','captured_start':'2026-11-01T12:00:00Z','captured_end':'2026-11-01T12:01:00Z',
@@ -22,6 +22,10 @@ class CoreTests(unittest.TestCase):
   rules=[x['rule'] for x in findings(BASE)]
   self.assertIn('overdue',rules);self.assertIn('repeated-failures',rules)
   self.assertNotIn('disable_wp_cron',rules)
+ def test_shared_age_state_and_group_filter(self):
+  selected=select_jobs(BASE,term='send_mail',state='failed',min_age=60,group_by='status')
+  self.assertEqual(len(selected['jobs']),2)
+  self.assertEqual(selected['groups'],[('failed',2)])
  def test_partial_capture_and_timezone_offset(self):
   x=copy.deepcopy(BASE);x['coverage']['action']={'complete':False,'source_count':None};x['jobs']=x['jobs'][3:];x['coverage']['log']={'complete':False,'source_count':None};x['logs']=[]
   x['captured_start']='2026-11-01T14:00:00+02:00';x['captured_end']='2026-11-01T14:01:00+02:00'
@@ -36,6 +40,11 @@ class CoreTests(unittest.TestCase):
   self.assertIn('progressed',[x['change'] for x in compare(BASE,later)['rows']])
   self.assertIn('followup_findings',json.loads(report(BASE,later,format='json')))
   self.assertIn('## Follow-up findings',report(BASE,later))
+ def test_old_and_changed_claim_stays_evidence_only(self):
+  old=copy.deepcopy(BASE);old['jobs'][0].update(status='in-progress',claim_id='4',claim_created='2026-11-01T09:00:00Z')
+  self.assertIn('old-claim',[x['rule'] for x in findings(old)])
+  later=copy.deepcopy(old);later['captured_start']='2026-11-01T13:00:00Z';later['captured_end']='2026-11-01T13:01:00Z';later['jobs'][0]['claim_id']='5'
+  self.assertEqual([x for x in compare(old,later)['rows'] if x['identity']=="('action', '1')"][0]['change'],'claim-changed')
  def test_ambiguous_cron(self):
   x=copy.deepcopy(BASE);x['jobs'].append(dict(x['jobs'][-1],id='c2'));x['coverage']['cron']['source_count']=2
   later=copy.deepcopy(x);later['captured_start']='2026-11-01T13:00:00Z';later['captured_end']='2026-11-01T13:01:00Z'
@@ -48,6 +57,13 @@ class CoreTests(unittest.TestCase):
   new['jobs'][-1]['scheduled']='2026-11-01T12:00:00Z'
   changes=[r['change'] for r in compare(old,new)['rows']]
   self.assertIn('new',changes);self.assertIn('no-longer-observed',changes)
+ def test_one_shot_timezone_equivalence(self):
+  old=copy.deepcopy(BASE);new=copy.deepcopy(BASE)
+  old['jobs'][-1]['recurrence']='';old['jobs'][-1]['arg_fingerprint']='a'*64
+  new['captured_start']='2026-11-01T13:00:00Z';new['captured_end']='2026-11-01T13:01:00Z'
+  new['jobs'][-1]['recurrence']='';new['jobs'][-1]['arg_fingerprint']='a'*64
+  new['jobs'][-1]['scheduled']='2026-11-01T06:00:00-05:00'
+  self.assertIn('unchanged',[r['change'] for r in compare(old,new)['rows']])
  def test_reject_mixed_site_duplicate_timezone_and_count(self):
   for mutation in ('site','duplicate','timezone','count'):
    x=copy.deepcopy(BASE)
@@ -59,6 +75,20 @@ class CoreTests(unittest.TestCase):
    if mutation=='timezone':x['captured_end']='2026-11-01T12:01:00'
    if mutation=='count':x['coverage']['action']['source_count']=5
    with self.assertRaises(ValueError):validate(x)
+ def test_reject_unredacted_and_undeclared_import_data(self):
+  from wqi.core import backup_incident
+  for kind in ('arguments','claim','log_message','source_secret','coverage_secret'):
+   x=copy.deepcopy(BASE)
+   if kind in ('arguments','claim'):x['jobs'][0][kind]={'customer_email':'qa-secret@example.invalid'}
+   elif kind=='log_message':x['logs'][0]['message']='qa-secret@example.invalid'
+   elif kind=='coverage_secret':x['coverage']['action']['arguments']='qa-secret@example.invalid'
+   else:x['source']['admin_email']='qa-secret@example.invalid'
+   with self.assertRaises(ValueError):validate(x)
+   with tempfile.TemporaryDirectory() as root:
+    source=Path(root)/'source.json';source.write_text(json.dumps(x));incident=Path(root)/'incident'
+    with self.assertRaises(ValueError):save_incident(incident,source)
+    self.assertFalse(incident.exists())
+    with self.assertRaises(OSError):backup_incident(incident,Path(root)/'backup.zip')
  def test_html_escaped_and_incident_hashes(self):
   x=copy.deepcopy(BASE);x['jobs'][0]['hook']='<script>alert(1)</script>'
   self.assertNotIn('<script>',report(x,notes='<script>',format='html'))
@@ -91,7 +121,7 @@ class BrowserTests(unittest.TestCase):
   import socket, subprocess, sys, time, urllib.request, urllib.error
   x=copy.deepcopy(BASE)
   x['jobs']=[{'kind':'action','id':str(i),'hook':'bulk_hook','group':'batch','status':'pending','scheduled':'2026-11-01T12:00:00Z'} for i in range(301)]
-  x['logs']=[{'action_id':'300','message':'later','time':'2026-11-01T12:00:00Z'},{'action_id':'300','message':'earlier','time':'2026-11-01T12:30:00+01:00'}]
+  x['logs']=[{'action_id':'300','message':'Log event (message omitted for privacy)','time':'2026-11-01T12:00:00Z'},{'action_id':'299','message':'Log event (message omitted for privacy)','time':'2026-11-01T12:30:00+01:00'}]
   x['coverage']['action']['source_count']=301;x['coverage']['cron']['source_count']=0
   x['coverage']['log']['source_count']=2
   with tempfile.TemporaryDirectory() as root:
@@ -112,7 +142,9 @@ class BrowserTests(unittest.TestCase):
     body=response.read().decode();response.close();self.assertIn('>300</td>',body);self.assertNotIn('>299</td>',body)
     with opener.open(f'http://127.0.0.1:{port}/logs') as log_response:
      log_body=log_response.read().decode();self.assertIn('Action log timeline',log_body)
-     self.assertLess(log_body.index('earlier'),log_body.index('later'))
+     self.assertLess(log_body.index('>299</td>'),log_body.index('>300</td>'))
+    with opener.open(f'http://127.0.0.1:{port}/?state=pending&min_age=0&group_by=status') as filtered:
+     self.assertIn('Grouped by status',filtered.read().decode())
     request=urllib.request.Request(f'http://127.0.0.1:{port}/',headers={'Host':'evil.example'})
     with self.assertRaises(urllib.error.HTTPError) as ctx:opener.open(request)
     self.assertEqual(ctx.exception.code,403);ctx.exception.close()
