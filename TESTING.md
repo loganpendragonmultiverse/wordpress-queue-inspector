@@ -1,0 +1,9 @@
+# Testing and known limits
+
+Run `python3 -m unittest discover -s tests -v`. The local suite covers overdue and repeated failures, disabled internal cron interpretation, partial disappearance, recorded completion, ambiguous recurring fingerprints, site/time/count rejection, HTML escaping, incident hash tamper detection, 300-job input, browser page 4, log view, and hostile Host header. CLI smoke uses the sample snapshots.
+
+Disposable integration on 2026-11-02: WordPress 7.1.4, PHP 8.3.36, Action Scheduler 4.2.0, MariaDB 11.8.9, WP-CLI in an isolated Docker fixture. A real export had 4 actions, 10 cron events and 4 logs, with complete counts. It detected one overdue pending action, two failed actions on a hook and an absent registered cron callback. A 514-action export crossed the 500-row pagination boundary, reconciled counts, and omitted a sentinel action argument, fixture email and server path. A second capture after the fixture action's recorded completion showed pending → complete. No client site was used. `--hook=init` is required for WP-CLI `eval-file`; `after_wp_load` did not execute the file. PHP 8.2.35 lint passed.
+
+A synthetic Python 3.12.14 in-memory 100,000-action validate/findings/compare run took 1.426 seconds and peaked at 116,384 KiB RSS in the local cloud environment. This does not verify 100,000-action JSON import or GUI responsiveness.
+
+Unverified: external platform installation, assistive technology audit, 100,000-action exporter and browser performance, and independent comparison with WordPress admin tools. This release must not be called Gold until these gates pass. The exporter relies on Action Scheduler's default tables and does not collect custom data stores. Log messages are intentionally omitted, limiting failure diagnosis. Source rows changing during capture can make pagination reconciliation partial.

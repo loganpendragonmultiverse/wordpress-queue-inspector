@@ -1,0 +1,68 @@
+{
+  "schema": "wqi.snapshot/1",
+  "site": "shop-example",
+  "captured_start": "2026-11-01T13:00:00Z",
+  "captured_end": "2026-11-01T13:01:00Z",
+  "source": {
+    "wordpress": "6.8",
+    "action_scheduler": "3.9",
+    "disable_wp_cron": true
+  },
+  "jobs": [
+    {
+      "kind": "action",
+      "id": "1",
+      "hook": "send_mail",
+      "group": "1",
+      "status": "complete",
+      "scheduled": "2026-11-01T08:00:00Z"
+    },
+    {
+      "kind": "action",
+      "id": "2",
+      "hook": "send_mail",
+      "group": "1",
+      "status": "failed",
+      "scheduled": "2026-11-01T09:00:00Z"
+    },
+    {
+      "kind": "action",
+      "id": "3",
+      "hook": "send_mail",
+      "group": "1",
+      "status": "failed",
+      "scheduled": "2026-11-01T09:10:00Z"
+    },
+    {
+      "kind": "cron",
+      "id": "c1",
+      "hook": "cleanup",
+      "group": "",
+      "status": "scheduled",
+      "scheduled": "2026-11-01T11:00:00Z",
+      "recurrence": "hourly",
+      "callback_present": true
+    }
+  ],
+  "logs": [
+    {
+      "action_id": "2",
+      "message": "Log event (message omitted for privacy)",
+      "time": "2026-11-01T09:11:00Z"
+    }
+  ],
+  "coverage": {
+    "action": {
+      "complete": true,
+      "source_count": 3
+    },
+    "cron": {
+      "complete": true,
+      "source_count": 1
+    },
+    "log": {
+      "complete": true,
+      "source_count": 1
+    }
+  }
+}
